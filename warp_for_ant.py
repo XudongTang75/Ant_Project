@@ -123,7 +123,7 @@ class Example:
             self.renderer.render(self.state_0)
             self.renderer.end_frame()
 
-
+# Main
 if __name__ == "__main__":
     import argparse
 
