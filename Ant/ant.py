@@ -45,11 +45,11 @@ class Example:
             density=1000,
             armature=0.05,
             stiffness=0.0,
-            damping=1,
+            damping=10,
             contact_ke=4.e+4,
             contact_kd=1.e+4,
             contact_kf=3.e+3,
-            contact_mu=0.75,
+            contact_mu=1,
             limit_ke=1.e+3,
             limit_kd=1.e+1,
         )
@@ -101,25 +101,25 @@ class Example:
         
     
     def step(self, actions=None):
-        with wp.ScopedTimer("step"):
-        # If actions are provided, apply them to the model
-            if actions is not None:
-                # Convert actions to a Warp array with the correct dtype
-                actions_wp = wp.array(actions, dtype=self.model.joint_act.dtype, device=self.model.joint_act.device)
-                # Copy the values to self.model.joint_act
-                wp.copy(self.model.joint_act, actions_wp)
-            
-            # Clear forces and run collision detection
-            self.state_0.clear_forces()
-            wp.sim.collide(self.model, self.state_0)
+        if actions is not None:
+            # Clip the actions to reasonable bounds (adjust as needed)
+            # actions = np.clip(actions, -1.0, 1.0)
+            # Convert actions to a Warp array with the correct dtype
+            actions_wp = wp.array(actions, dtype=self.model.joint_act.dtype, device=self.model.joint_act.device)
+            # Copy the values to self.model.joint_act
+            wp.copy(self.model.joint_act, actions_wp)
+        
+        # Clear forces and run collision detection
+        self.state_0.clear_forces()
+        wp.sim.collide(self.model, self.state_0)
 
-            # Run the integrator simulation step
-            for _ in range(self.sim_substeps):
-                self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt)
-                # Swap states after each substep to progress the simulation
-                self.state_0, self.state_1 = self.state_1, self.state_0
+        # Run the integrator simulation step
+        for _ in range(self.sim_substeps):
+            self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt)
+            # Swap states after each substep to progress the simulation
+            self.state_0, self.state_1 = self.state_1, self.state_0
 
-            self.sim_time += self.frame_dt
+        self.sim_time += self.frame_dt
 
     def compute_reward(self):
         # Example: A simple reward function based on the forward velocity of the Ant

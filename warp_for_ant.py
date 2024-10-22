@@ -16,6 +16,7 @@ def train_policy(num_episodes, num_steps, learning_rate, path):
     # Initialize the policy network and optimizer
     policy = PolicyNetwork(state_dim=state_dim, action_dim=action_dim)
     optimizer = optim.Adam(policy.parameters(), lr=learning_rate)
+    #torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=1.0)
 
     best_reward = float('-inf')  # Initialize with negative infinity to track the best reward
 
@@ -61,7 +62,7 @@ def train_policy(num_episodes, num_steps, learning_rate, path):
             # Save the current model as the best one
             print(f"New best reward: {best_reward} at episode {episode + 1}")
             if env.renderer:
-                env.renderer.save(stage_path=path)
+                env.renderer.save()
 
         print(f"Episode {episode + 1}/{num_episodes}, Total Reward: {total_reward}")
 
