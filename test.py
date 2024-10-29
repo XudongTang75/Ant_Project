@@ -7,6 +7,7 @@ import warp as wp
 import warp.examples
 import warp.sim
 import warp.sim.render
+import copy
 
 
 # Return ants that align on X axis, and for y axis they are 5.0 apart.
@@ -18,20 +19,19 @@ def compute_env_offsets(num_envs, env_offset=(0.0, 5.0, 0.0), up_axis="Z"):
     for i in range(num_envs):
         
         offset = np.zeros(3)
-        offset[0] = 0.0  # X-axis position based on row index
-        offset[1] = i * env_offset[1]  # Y-axis position based on column index
+        offset[0] = 0.0 
+        offset[1] = i * env_offset[1]  # Y-axis position
         offset[2] = 0.0  # Fixed Z-axis position for all Ants
 
         env_offsets.append(offset)
         
-    print(env_offsets)
     # Convert to a numpy array for easy manipulation
     env_offsets = np.array(env_offsets)
 
     # Calculate the center of the grid
     grid_center = np.mean(env_offsets, axis=0)
     
-    # Subtract the grid center's X and Y values to center the grid around the environment origin
+    # Line up the Ants on the Y axis
     env_offsets[:, 0] -= grid_center[0]
     env_offsets[:, 1] -= grid_center[1]
 
@@ -43,28 +43,19 @@ def compute_env_offsets(num_envs, env_offset=(0.0, 5.0, 0.0), up_axis="Z"):
 @wp.kernel
 def compute_endeffector_position(
     body_q: wp.array(dtype=wp.transform),   # The transformation of the entire body
-    # FIXME
-    # MIGHT WANT TO CHANGE!!!
     num_links: int,                         # Number of links (joints) in each leg
-    ee_link_indices: wp.array(dtype=int),   # Indices of the last link (feet) in the chain for each leg
+    # FIXME
+    # Only use the front left as end effectors for now, might need to change to 4
+    ee_link_indices: int,   # INdex of the last link in the chain for each leg
     ee_link_offsets: wp.vec3,  # Offsets for each end-effector relative to its leg's last joint
     ee_pos: wp.array(dtype=wp.vec3)         # Output array for end-effector positions (all 4 feet per Ant)
 ):
     tid = wp.tid()  # Thread ID for each Ant
     # Compute positions for all 4 end-effectors (feet) for this Ant
-
-    # FIXME
-    # I think this is very wrong
-    # Need to select all 4 ankle in body Q
-    # Should be [tid*num_link + index_of_ankle 1/2/3/4]
-    for i in range(4):  # Assuming 4 legs for the Ant
-        ee_pos[tid * 4 + i] = wp.transform_point(
-            body_q[tid * num_links + ee_link_indices[i]],  # Get the transformation of the last link in each leg
-            ee_link_offsets  # Apply the offset for each foot
-        )
-
-
-
+    ee_pos[tid] = wp.transform_point(
+        body_q[tid * num_links + ee_link_indices],  # Get the transformation of the last link in each leg
+        ee_link_offsets  # Apply the offset for each foot
+    )
 
 
 class Example:
@@ -98,6 +89,7 @@ class Example:
 
         self.num_envs = num_envs
         offsets = compute_env_offsets(self.num_envs)
+        self.dof = len(articulation_builder.joint_q)
 
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(offsets[i], wp.quat_identity()))
@@ -106,11 +98,13 @@ class Example:
             builder.joint_axis_mode = [wp.sim.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
             builder.joint_act[-8:] = [0.0, 1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 1.0]
 
-        
+
         np.set_printoptions(suppress=True)
 
         self.model = builder.finalize()
         self.model.ground = True
+        self.model.joint_q.requires_grad = True
+        self.model.body_q.requires_grad = True
         self.model.joint_attach_ke = 16000.0
         self.model.joint_attach_kd = 200.0
 
@@ -121,22 +115,39 @@ class Example:
         else:
             self.renderer = None
 
-        self.state_0 = self.model.state()
-        self.state_1 = self.model.state()
+        self.state_0 = self.model.state(requires_grad=True)
+        self.state_1 = self.model.state(requires_grad=True)
         
 
         self.num_links = len(articulation_builder.joint_type)
-        self.ee_link_index = wp.array([2,4,6,8], dtype=wp.int32)
+        # FIXME
+        # Might need to change to [2,4,6,8] for 4 feets
+        self.ee_link_index = 4
+        # FIXME
+        # Currently no offset, might need to change
         self.ee_link_offset = wp.vec3(0.0, 0.0, 0.0)
-        self.ee_pos = wp.zeros(self.num_envs*4, dtype=wp.vec3, requires_grad=True)
+        self.ee_pos = wp.zeros(self.num_envs, dtype=wp.vec3, requires_grad=True)
         
-        
-        print(offsets)
-        self.compute_ee_position()
-        print(self.ee_pos)
+        #tape_1 = wp.Tape()
+        #with tape_1:
+        #    wp.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
+
+        # FIXME
+        # Might not want to call it here
+        # It seems like the end effector position is a relative position wrt its body
+        # Try add 0.01 to the x axis of ee_pos for now
+        '''
+        tape = wp.Tape()
+        with tape:
+            self.compute_ee_position()
+        self.target_origin = self.ee_pos
+        self.target_origin = np.array(self.target_origin)
+        self.targets = self.target_origin.copy()
+        '''
+
+        self.profiler = {}
 
 
-        #wp.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
         self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
         if self.use_cuda_graph:
             with wp.ScopedCapture() as capture:
@@ -147,7 +158,6 @@ class Example:
         
 
     def compute_ee_position(self):
-        wp.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.state_0)
         wp.launch(
             compute_endeffector_position,
             dim=self.num_envs,
@@ -155,21 +165,52 @@ class Example:
             outputs=[self.ee_pos],
         )
 
+    def compute_jacobian(self):
+
+        # jacobians -> [num_envs][3][15]
+
+        #print(jacobians)
+        return jacobians
+
 
 
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 
-            
-           # self.state_0.joint_q = wp.array(
-           #     self.state_0.joint_q.numpy() + [0,0,0,0,0,0,0,0.001,0,0,0,0,0,0,0],
-           #     dtype=wp.float32,
-           #     requires_grad=True,
-            #) 
 
-            wp.sim.collide(self.model, self.state_0)
-            self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt)
+            
+            # self.state_0.joint_q = wp.array(
+            #     self.state_0.joint_q.numpy() + [0,0,0,0,0,0,0,0.01,0,0,0,0,0,0,0,
+            #                                     0,0,0,0,0,0,0,0.01,0,0,0,0,0,0,0],
+            #     dtype=wp.float32,
+            #     requires_grad=True,
+            # ) 
+            
+
+            #self.compute_jacobian()
+            #print(self.ee_pos)
+            tape = wp.Tape()
+            with tape:
+                wp.sim.collide(self.model, self.state_0)
+                self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt)
+                self.compute_ee_position()
+                print(self.ee_pos)
+                jacobians = np.empty((self.num_envs, 3, self.dof), dtype=np.float32)
+                for output_index in range(3):
+                    # select which row of the Jacobian we want to compute
+                    select_index = np.zeros(3)
+                    select_index[output_index] = 1.0
+                    e = wp.array(np.tile(select_index, self.num_envs), dtype=wp.vec3)
+                    #print(e)
+                    tape.backward(grads={self.ee_pos: e})
+                    if self.state_0.joint_q in tape.gradients:
+                        q_grad_i = tape.gradients[self.state_0.joint_q]
+                    else:
+                        print("joint_q gradients not found in tape.")
+                    jacobians[:, output_index, :] = q_grad_i.numpy().reshape(self.num_envs, self.dof)
+                    tape.zero()
+                #print(jacobians)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     
