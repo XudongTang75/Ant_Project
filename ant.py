@@ -100,9 +100,6 @@ class Example:
             builder.joint_axis_mode = [wp.sim.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
             builder.joint_act[-8:] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
-            #self.target_origin.append((0.4, 0.3, self.offsets[self.num_envs-1-i,1]+0.4))
-
-        #self.target_origin = np.array(self.target_origin)
 
 
         np.set_printoptions(suppress=True)
@@ -207,7 +204,7 @@ class Example:
                 ##################################################################################################
                 #             Generate RANDOM action input, eventually want to do controlled action              #
                 ##################################################################################################
-                self.control.joint_act = wp.array(np.random.uniform(-500, 500, size=8).astype(np.float32))
+                self.control.joint_act = wp.array(np.random.uniform(-500, 500, size=16).astype(np.float32))
 
 
 
