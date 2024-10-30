@@ -97,7 +97,7 @@ class Example:
             builder.add_builder(articulation_builder, xform=wp.transform(self.offsets[i], wp.quat_identity()))
 
             builder.joint_q[-8:] = [0.0, 1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 1.0]
-            builder.joint_axis_mode = [wp.sim.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
+            builder.joint_axis_mode = [wp.sim.JOINT_MODE_FORCE] * len(builder.joint_axis_mode)
             builder.joint_act[-8:] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 
@@ -112,11 +112,6 @@ class Example:
         self.model.joint_attach_ke = 16000.0
         self.model.joint_attach_kd = 200.0
 
-
-        ##################################################################################################
-        #                        This is where we change the Joint action mode                           #
-        ##################################################################################################
-        self.model.joint_axis_mode = wp.array([warp.sim.JOINT_MODE_FORCE for _ in range(self.dof)], dtype=wp.int32)
 
         self.integrator = wp.sim.FeatherstoneIntegrator(self.model)
 
