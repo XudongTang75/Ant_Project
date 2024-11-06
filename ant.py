@@ -109,6 +109,8 @@ class Example:
         self.model.ground = True
         self.model.joint_q.requires_grad = True
         self.model.body_q.requires_grad = True
+
+        
         self.model.joint_attach_ke = 16000.0
         self.model.joint_attach_kd = 200.0
 
@@ -124,6 +126,8 @@ class Example:
         self.state_1 = self.model.state(requires_grad=True)
         
         self.control = self.model.control()
+        # self.control.joint_act = wp.array(np.random.uniform(-500, 500, size=8*self.num_envs).astype(np.float32))
+        self.control.joint_act.requires_grad = True
 
         self.num_links = len(articulation_builder.joint_type)
         # FIXME
@@ -152,7 +156,7 @@ class Example:
         wp.launch(
             compute_endeffector_position,
             dim=self.num_envs,
-            inputs=[self.state_0.body_q, self.num_links, self.ee_link_index, self.ee_link_offset],
+            inputs=[self.state_1.body_q, self.num_links, self.ee_link_index, self.ee_link_offset],
             outputs=[self.ee_pos],
         )
 
@@ -172,35 +176,48 @@ class Example:
     def simulate(self, frame_num):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
-            #print(self.ee_pos)
-            #print(self.target_origin)
             tape = wp.Tape()
             with tape:
                 wp.sim.collide(self.model, self.state_0)
                 self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt, control=self.control)
                 self.compute_ee_position()
-                #print(self.state_0.joint_q)
-                jacobians = np.empty((self.num_envs, 3, self.dof), dtype=np.float32)
-                for output_index in range(3):
+                jacobians = np.empty((self.num_envs, 15, 8), dtype=np.float32)
+                #jacobians = np.empty((self.num_envs, 3, 8), dtype=np.float32)
+                #print(self.state_1)
+                #jacobians = np.empty((self.num_envs, 3, 15), dtype=np.float32)
+                for output_index in range(15):
+                #for output_index in range(3):
                     # select which row of the Jacobian we want to compute
-                    select_index = np.zeros(3)
+                    #select_index = np.zeros(3)
+                    select_index = np.zeros(15)
                     select_index[output_index] = 1.0
-                    e = wp.array(np.tile(select_index, self.num_envs), dtype=wp.vec3)
-                    tape.backward(grads={self.ee_pos: e})
-                    q_grad_i = tape.gradients[self.state_0.joint_q]
-                    jacobians[:, output_index, :] = q_grad_i.numpy().reshape(self.num_envs, self.dof)
+                    # e = wp.array(np.tile(select_index, self.num_envs), dtype=wp.vec3)
+                    # joint_q = wp.array(self.state_1.joint_q.numpy().reshape(self.num_envs, -1).astype(np.float32), requires_grad=True)
+                    #print(joint_q)
+                    e = np.zeros(15)
+                    e[0] = 1
+                    e = wp.array(e, dtype=wp.vec3)
+                    
+                    tape.backward(grads={self.state_1.joint_q: e})
+                    #q_grad_i = tape.gradients[self.state_0.joint_q]
+                    q_grad_i = tape.gradients[self.control.joint_act]
+                    #print(self.control.joint_act)
+                    jacobians[:, output_index, :] = q_grad_i.numpy().reshape(self.num_envs, 8)
+                    #jacobians[:, output_index, :] = q_grad_i.numpy().reshape(self.num_envs, 15)
                     tape.zero()
-        
+            
+            print(jacobians)
             self.state_0, self.state_1 = self.state_1, self.state_0
-
+            #print(self.ee_pos)
             
             if frame_num > 60:
                 
                 ##################################################################################################
                 #             Generate RANDOM action input, eventually want to do controlled action              #
                 ##################################################################################################
-                self.control.joint_act = wp.array(np.random.uniform(-500, 500, size=16).astype(np.float32))
-
+                self.control.joint_act = wp.array(np.random.uniform(-200, 200, size=8).astype(np.float32))
+                self.control.joint_act.requires_grad = True
+                
 
 
                 ##################################################################################################
@@ -208,17 +225,22 @@ class Example:
                 # It does NOT have any action involved, so the code simply render the joint at updated location! #
                 ##################################################################################################
                 '''
-                error = np.tile(np.array([0.008, 0, 0]), (self.num_envs, 1))
+                error = np.tile(np.array([0, 0.005, 0]), (self.num_envs, 1))
 
                 self.error = error.reshape(self.num_envs, 3, 1)
                 # compute Jacobian transpose update
                 delta_q = np.matmul(jacobians.transpose(0, 2, 1), self.error)
+                
                 self.state_0.joint_q = wp.array(
+                #self.control.joint_act = wp.array(
+                   # self.control.joint_act.numpy() + self.step_size * delta_q.flatten(),
                     self.state_0.joint_q.numpy() + self.step_size * delta_q.flatten(),
                     dtype=wp.float32,
                     requires_grad=True,
                 )
+                print(self.state_0.joint_q)
                 '''
+                
                 
 
     
@@ -259,7 +281,6 @@ if __name__ == "__main__":
 
     with wp.ScopedDevice(args.device):
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
-        
 
         for i in range(args.num_frames):
             #if i > 60:
