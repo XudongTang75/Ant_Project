@@ -8,6 +8,22 @@ import warp.examples
 import warp.sim
 import warp.sim.render
 
+import torch
+import torch.nn as nn
+
+
+class PolicyNetwork(nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_size=64):
+        super(PolicyNetwork, self).__init__()
+        self.fc1 = nn.Linear(state_dim, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size)
+        self.fc3 = nn.Linear(hidden_size, action_dim)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        action = torch.tanh(self.fc3(x))  # Assuming normalized actions
+        return action + torch.randn_like(action) 
 
 # Return ants that align on X axis, and for y axis they are 5.0 apart.
 def compute_env_offsets(num_envs, env_offset=(0.0, 5.0, 0.0), up_axis="Z"):
@@ -56,10 +72,29 @@ def compute_endeffector_position(
         ee_link_offsets  # Apply the offset for each foot
     )
 
+@wp.kernel
+def compute_reward(
+    body_q: wp.array(dtype=wp.transform),   # The transformation of the entire body
+    reward: wp.array(dtype=wp.float32)         # Output array for reward
+):
+    tid = wp.tid()  # Thread ID for each Ant
+    com_0 = wp.transform_point(body_q[tid * 9], wp.vec3f(0.0, 0.0, 0.0))
+    com_1 = wp.transform_point(body_q[tid * 9 + 1], wp.vec3f(0.0, 0.0, 0.0))
+    com_2 = wp.transform_point(body_q[tid * 9 + 2], wp.vec3f(0.0, 0.0, 0.0))
+    com_3 = wp.transform_point(body_q[tid * 9 + 3], wp.vec3f(0.0, 0.0, 0.0))
+    com_4 = wp.transform_point(body_q[tid * 9 + 4], wp.vec3f(0.0, 0.0, 0.0))
+    com_5 = wp.transform_point(body_q[tid * 9 + 5], wp.vec3f(0.0, 0.0, 0.0))
+    com_6 = wp.transform_point(body_q[tid * 9 + 6], wp.vec3f(0.0, 0.0, 0.0))
+    com_7 = wp.transform_point(body_q[tid * 9 + 7], wp.vec3f(0.0, 0.0, 0.0))
+    com_8 = wp.transform_point(body_q[tid * 9 + 8], wp.vec3f(0.0, 0.0, 0.0))
+    reward[tid] = -(com_0[0] + com_1[0] + com_2[0] + com_3[0] + com_4[0] + com_5[0] + com_6[0] + com_7[0] + com_8[0])
+
 
 class Example:
     def __init__(self, stage_path="ant.usd", num_envs=1):
         articulation_builder = wp.sim.ModelBuilder()
+        self.controller = PolicyNetwork(15 + 9 * 7, 8)
+        self.optimizer = torch.optim.Adam(list(self.controller.parameters()), lr=1e-2)
         warp.sim.parse_mjcf(
             os.path.join(warp.examples.get_asset_directory(), "nv_ant.xml"),
             articulation_builder,
@@ -97,7 +132,7 @@ class Example:
             builder.add_builder(articulation_builder, xform=wp.transform(self.offsets[i], wp.quat_identity()))
 
             builder.joint_q[-8:] = [0.0, 1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 1.0]
-            builder.joint_axis_mode = [wp.sim.JOINT_MODE_FORCE] * len(builder.joint_axis_mode)
+            builder.joint_axis_mode = [wp.sim.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
             builder.joint_act[-8:] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 
@@ -178,72 +213,28 @@ class Example:
             self.state_0.clear_forces()
             tape = wp.Tape()
             with tape:
+                joint_signals = self.controller(
+                    torch.concatenate([
+                        wp.to_torch(self.state_0.joint_q).detach(), 
+                        wp.to_torch(self.state_0.body_q).detach().flatten()
+                    ]).unsqueeze(0))[0]
+                self.control.joint_act = wp.from_torch(joint_signals, requires_grad=True)
                 wp.sim.collide(self.model, self.state_0)
                 self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt, control=self.control)
-                self.compute_ee_position()
-                jacobians = np.empty((self.num_envs, 15, 8), dtype=np.float32)
-                #jacobians = np.empty((self.num_envs, 3, 8), dtype=np.float32)
-                #print(self.state_1)
-                #jacobians = np.empty((self.num_envs, 3, 15), dtype=np.float32)
-                for output_index in range(15):
-                #for output_index in range(3):
-                    # select which row of the Jacobian we want to compute
-                    #select_index = np.zeros(3)
-                    select_index = np.zeros(15)
-                    select_index[output_index] = 1.0
-                    # e = wp.array(np.tile(select_index, self.num_envs), dtype=wp.vec3)
-                    # joint_q = wp.array(self.state_1.joint_q.numpy().reshape(self.num_envs, -1).astype(np.float32), requires_grad=True)
-                    #print(joint_q)
-                    e = np.zeros(15)
-                    e[0] = 1
-                    e = wp.array(e, dtype=wp.vec3)
-                    
-                    tape.backward(grads={self.state_1.joint_q: e})
-                    #q_grad_i = tape.gradients[self.state_0.joint_q]
-                    q_grad_i = tape.gradients[self.control.joint_act]
-                    #print(self.control.joint_act)
-                    jacobians[:, output_index, :] = q_grad_i.numpy().reshape(self.num_envs, 8)
-                    #jacobians[:, output_index, :] = q_grad_i.numpy().reshape(self.num_envs, 15)
-                    tape.zero()
-            
-            print(jacobians)
+                reward = wp.zeros(1, dtype=wp.float32, requires_grad=True)
+                wp.launch(compute_reward, dim=self.num_envs, inputs=[self.state_1.body_q], outputs=[reward])
+                tape.backward(loss=reward)
+                print(tape.gradients[self.control.joint_act])
+                tape.zero()
+                
+                #print( self.state_0.body_q.gr)
+
+            #print(reward.numpy())
+                
+
+                
             self.state_0, self.state_1 = self.state_1, self.state_0
-            #print(self.ee_pos)
             
-            if frame_num > 60:
-                
-                ##################################################################################################
-                #             Generate RANDOM action input, eventually want to do controlled action              #
-                ##################################################################################################
-                self.control.joint_act = wp.array(np.random.uniform(-200, 200, size=8).astype(np.float32))
-                self.control.joint_act.requires_grad = True
-                
-
-
-                ##################################################################################################
-                #                This part update joint_q using jacobian wrt the ee_position                     #
-                # It does NOT have any action involved, so the code simply render the joint at updated location! #
-                ##################################################################################################
-                '''
-                error = np.tile(np.array([0, 0.005, 0]), (self.num_envs, 1))
-
-                self.error = error.reshape(self.num_envs, 3, 1)
-                # compute Jacobian transpose update
-                delta_q = np.matmul(jacobians.transpose(0, 2, 1), self.error)
-                
-                self.state_0.joint_q = wp.array(
-                #self.control.joint_act = wp.array(
-                   # self.control.joint_act.numpy() + self.step_size * delta_q.flatten(),
-                    self.state_0.joint_q.numpy() + self.step_size * delta_q.flatten(),
-                    dtype=wp.float32,
-                    requires_grad=True,
-                )
-                print(self.state_0.joint_q)
-                '''
-                
-                
-
-    
     def step(self, frame_num):
         with wp.ScopedTimer("step", print=False):
             if self.use_cuda_graph:
@@ -267,7 +258,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default=None, help="Override the default Warp device.")
+    parser.add_argument("--device", type=str, default="cpu", help="Override the default Warp device.")
     parser.add_argument(
         "--stage_path",
         type=lambda x: None if x == "None" else str(x),
@@ -275,7 +266,7 @@ if __name__ == "__main__":
         help="Path to the output USD file.",
     )
     parser.add_argument("--num_frames", type=int, default=300, help="Total number of frames.")
-    parser.add_argument("--num_envs", type=int, default=2, help="Total number of simulated environments.")
+    parser.add_argument("--num_envs", type=int, default=1, help="Total number of simulated environments.")
 
     args = parser.parse_known_args()[0]
 
