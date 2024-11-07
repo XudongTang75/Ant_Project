@@ -23,7 +23,7 @@ class PolicyNetwork(nn.Module):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
         action = torch.tanh(self.fc3(x))  # Assuming normalized actions
-        return action + torch.randn_like(action) 
+        return action + torch.randn_like(action)
 
 # Return ants that align on X axis, and for y axis they are 5.0 apart.
 def compute_env_offsets(num_envs, env_offset=(0.0, 5.0, 0.0), up_axis="Z"):
@@ -32,20 +32,20 @@ def compute_env_offsets(num_envs, env_offset=(0.0, 5.0, 0.0), up_axis="Z"):
     env_offsets = []
 
     for i in range(num_envs):
-        
+
         offset = np.zeros(3)
-        offset[0] = 0.0 
+        offset[0] = 0.0
         offset[1] = i * env_offset[1]  # Y-axis position
         offset[2] = 0.0  # Fixed Z-axis position for all Ants
 
         env_offsets.append(offset)
-        
+
     # Convert to a numpy array for easy manipulation
     env_offsets = np.array(env_offsets)
 
     # Calculate the center of the grid
     grid_center = np.mean(env_offsets, axis=0)
-    
+
     # Line up the Ants on the Y axis
     env_offsets[:, 0] -= grid_center[0]
     env_offsets[:, 1] -= grid_center[1]
@@ -58,16 +58,17 @@ def compute_reward(
     reward: wp.array(dtype=wp.float32)         # Output array for reward
 ):
     tid = wp.tid()  # Thread ID for each Ant
-    com_0 = wp.transform_point(body_q[tid * 9], wp.vec3f(0.0, 0.0, 0.0))
-    com_1 = wp.transform_point(body_q[tid * 9 + 1], wp.vec3f(0.0, 0.0, 0.0))
-    com_2 = wp.transform_point(body_q[tid * 9 + 2], wp.vec3f(0.0, 0.0, 0.0))
-    com_3 = wp.transform_point(body_q[tid * 9 + 3], wp.vec3f(0.0, 0.0, 0.0))
-    com_4 = wp.transform_point(body_q[tid * 9 + 4], wp.vec3f(0.0, 0.0, 0.0))
-    com_5 = wp.transform_point(body_q[tid * 9 + 5], wp.vec3f(0.0, 0.0, 0.0))
-    com_6 = wp.transform_point(body_q[tid * 9 + 6], wp.vec3f(0.0, 0.0, 0.0))
-    com_7 = wp.transform_point(body_q[tid * 9 + 7], wp.vec3f(0.0, 0.0, 0.0))
-    com_8 = wp.transform_point(body_q[tid * 9 + 8], wp.vec3f(0.0, 0.0, 0.0))
-    reward[tid] = -(com_0[1] + com_1[1] + com_2[1] + com_3[1] + com_4[1] + com_5[1] + com_6[1] + com_7[1] + com_8[1])
+    com_0 = wp.transform_point(body_q[tid * 9], wp.vec3f(1.0, 1.0, 1.0))
+    com_1 = wp.transform_point(body_q[tid * 9 + 1], wp.vec3f(1.0, 1.0, 1.0))
+    com_2 = wp.transform_point(body_q[tid * 9 + 2], wp.vec3f(1.0, 1.0, 1.0))
+    com_3 = wp.transform_point(body_q[tid * 9 + 3], wp.vec3f(1.0, 1.0, 1.0))
+    com_4 = wp.transform_point(body_q[tid * 9 + 4], wp.vec3f(1.0, 1.0, 1.0))
+    com_5 = wp.transform_point(body_q[tid * 9 + 5], wp.vec3f(1.0, 1.0, 1.0))
+    com_6 = wp.transform_point(body_q[tid * 9 + 6], wp.vec3f(1.0, 1.0, 1.0))
+    com_7 = wp.transform_point(body_q[tid * 9 + 7], wp.vec3f(1.0, 1.0, 1.0))
+    com_8 = wp.transform_point(body_q[tid * 9 + 8], wp.vec3f(1.0, 1.0, 1.0))
+    x =  -(com_0 + com_1 + com_2 + com_3 + com_4 + com_5 + com_6 + com_7 + com_8)
+    reward[tid] = x[0] + x[1] + x[2]
 
 
 class Example:
@@ -97,7 +98,7 @@ class Example:
         self.frame_dt = 1.0 / fps
 
         # number of substeps per frame
-        self.sim_substeps = 50
+        self.sim_substeps = 10
         # timestep for each substep
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -105,15 +106,14 @@ class Example:
 
         self.num_envs = num_envs
         self.offsets = compute_env_offsets(self.num_envs)
-        self.dof = len(articulation_builder.joint_q)
 
         self.target_origin = []
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(self.offsets[i], wp.quat_identity()))
 
             builder.joint_q[-8:] = [0.0, 1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 1.0]
-            builder.joint_axis_mode = [wp.sim.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
-            builder.joint_act[-8:] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            builder.joint_axis_mode = [wp.sim.JOINT_MODE_FORCE] * len(builder.joint_axis_mode)
+            builder.joint_act[-8:] = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]
 
 
         np.set_printoptions(suppress=True)
@@ -122,12 +122,12 @@ class Example:
         self.model.joint_q.requires_grad = True
         self.model.body_q.requires_grad = True
 
-        
+
         self.model.joint_attach_ke = 16000.0
         self.model.joint_attach_kd = 200.0
 
 
-        self.integrator = wp.sim.FeatherstoneIntegrator(self.model)
+        self.integrator = wp.sim.XPBDIntegrator()
 
         if stage_path:
             self.renderer = wp.sim.render.SimRenderer(self.model, stage_path)
@@ -135,42 +135,18 @@ class Example:
             self.renderer = None
 
         self.states = [self.model.state(requires_grad=True) for _ in range(self.sim_substeps + 1)]
-        
         self.control = self.model.control(requires_grad=True)
-
-        self.num_links = len(articulation_builder.joint_type)
-        # FIXME
-        # Might need to change to [2,4,6,8] for 4 feets
-        self.ee_link_index = 8
-        # FIXME
-        # Currently no offset, might need to change
-        self.ee_link_offset = wp.vec3(0.0, 0.0, 0.0)
-        self.ee_pos = wp.zeros(self.num_envs, dtype=wp.vec3, requires_grad=True)
-        
-        self.targets = self.target_origin.copy()
-
-        self.profiler = {}
-
-
-        self.use_cuda_graph = wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device())
-        if self.use_cuda_graph:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
-
 
 
     def simulate(self, frame_num):
-        joint_signals = self.controller(
+        joint_signals = torch.zeros_like(self.controller(
             torch.concatenate([
                 wp.to_torch(self.states[0].joint_q).detach(),
                 wp.to_torch(self.states[0].body_q).detach().flatten()
-            ]).unsqueeze(0))[0]
+            ]).unsqueeze(0))[0])
         self.control.joint_act = wp.from_torch(joint_signals, requires_grad=True)
         reward = wp.zeros((self.num_envs,), dtype=wp.float32, requires_grad=True)
-
+        #
         tape = wp.Tape()
         with tape:
             for st in range(self.sim_substeps):
@@ -180,18 +156,14 @@ class Example:
             wp.launch(compute_reward, dim=self.num_envs, inputs=[self.states[self.sim_substeps].body_q], outputs=[reward])
 
         tape.backward(loss=reward)
-        print(tape.gradients[self.control.joint_act])
         tape.zero()
         self.states[0], self.states[-1] = self.states[-1], self.states[0]
-            
+
     def step(self, frame_num):
         with wp.ScopedTimer("step", print=False):
-            if self.use_cuda_graph:
-                wp.capture_launch(self.graph)
-            else:
-                self.simulate(frame_num)
+            self.simulate(frame_num)
         self.sim_time += self.frame_dt
-        
+
 
     def render(self):
         if self.renderer is None:
@@ -223,9 +195,6 @@ if __name__ == "__main__":
         example = Example(stage_path=args.stage_path, num_envs=args.num_envs)
 
         for i in range(args.num_frames):
-            #if i > 60:
-            #    example.targets = example.ee_pos.numpy().copy()
-            #    example.targets[:,0] += 0.0002
             example.step(i)
             example.render()
 
