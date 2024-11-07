@@ -52,26 +52,6 @@ def compute_env_offsets(num_envs, env_offset=(0.0, 5.0, 0.0), up_axis="Z"):
 
     return env_offsets
 
-
-
-
-@wp.kernel
-def compute_endeffector_position(
-    body_q: wp.array(dtype=wp.transform),   # The transformation of the entire body
-    num_links: int,                         # Number of links (joints) in each leg
-    # FIXME
-    # Only use the front left as end effectors for now, might need to change to 4
-    ee_link_indices: int,   # INdex of the last link in the chain for each leg
-    ee_link_offsets: wp.vec3,  # Offsets for each end-effector relative to its leg's last joint
-    ee_pos: wp.array(dtype=wp.vec3)         # Output array for end-effector positions (all 4 feet per Ant)
-):
-    tid = wp.tid()  # Thread ID for each Ant
-    # Compute positions for all 4 end-effectors (feet) for this Ant
-    ee_pos[tid] = wp.transform_point(
-        body_q[tid * num_links + ee_link_indices],  # Get the transformation of the last link in each leg
-        ee_link_offsets  # Apply the offset for each foot
-    )
-
 @wp.kernel
 def compute_reward(
     body_q: wp.array(dtype=wp.transform),   # The transformation of the entire body
@@ -87,7 +67,7 @@ def compute_reward(
     com_6 = wp.transform_point(body_q[tid * 9 + 6], wp.vec3f(0.0, 0.0, 0.0))
     com_7 = wp.transform_point(body_q[tid * 9 + 7], wp.vec3f(0.0, 0.0, 0.0))
     com_8 = wp.transform_point(body_q[tid * 9 + 8], wp.vec3f(0.0, 0.0, 0.0))
-    reward[tid] = -(com_0[0] + com_1[0] + com_2[0] + com_3[0] + com_4[0] + com_5[0] + com_6[0] + com_7[0] + com_8[0])
+    reward[tid] = -(com_0[1] + com_1[1] + com_2[1] + com_3[1] + com_4[1] + com_5[1] + com_6[1] + com_7[1] + com_8[1])
 
 
 class Example:
@@ -117,7 +97,7 @@ class Example:
         self.frame_dt = 1.0 / fps
 
         # number of substeps per frame
-        self.sim_substeps = 5
+        self.sim_substeps = 50
         # timestep for each substep
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -136,10 +116,7 @@ class Example:
             builder.joint_act[-8:] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 
 
-
         np.set_printoptions(suppress=True)
-        
-
         self.model = builder.finalize()
         self.model.ground = True
         self.model.joint_q.requires_grad = True
@@ -157,12 +134,9 @@ class Example:
         else:
             self.renderer = None
 
-        self.state_0 = self.model.state(requires_grad=True)
-        self.state_1 = self.model.state(requires_grad=True)
+        self.states = [self.model.state(requires_grad=True) for _ in range(self.sim_substeps + 1)]
         
-        self.control = self.model.control()
-        # self.control.joint_act = wp.array(np.random.uniform(-500, 500, size=8*self.num_envs).astype(np.float32))
-        self.control.joint_act.requires_grad = True
+        self.control = self.model.control(requires_grad=True)
 
         self.num_links = len(articulation_builder.joint_type)
         # FIXME
@@ -185,55 +159,30 @@ class Example:
             self.graph = capture.graph
         else:
             self.graph = None
-        
 
-    def compute_ee_position(self):
-        wp.launch(
-            compute_endeffector_position,
-            dim=self.num_envs,
-            inputs=[self.state_1.body_q, self.num_links, self.ee_link_index, self.ee_link_offset],
-            outputs=[self.ee_pos],
-        )
 
-    # if multiple envs, change z value 
-    # ee start position for joint #0: [0, 0.3, 0]
-    # ee start position for joint #1: [0.2, 0.3, -0.2]
-    # ee start position for joint #2: [0.4, 0.3, -0.4]
-    # ee start position for joint #3: [-0.2, 0.3, -0.2]
-    # ee start position for joint #4: [-0.4, 0.3, -0.4]
-    # ee start position for joint #5: [-0.2, 0.3, 0.2]
-    # ee start position for joint #6: [-0.4, 0.3, 0.4]
-    # ee start position for joint #7: [0.2, 0.3, 0.2]
-    # ee start position for joint #8: [0.4, 0.3, 0.4]
-
-    
 
     def simulate(self, frame_num):
-        for _ in range(self.sim_substeps):
-            self.state_0.clear_forces()
-            tape = wp.Tape()
-            with tape:
-                joint_signals = self.controller(
-                    torch.concatenate([
-                        wp.to_torch(self.state_0.joint_q).detach(), 
-                        wp.to_torch(self.state_0.body_q).detach().flatten()
-                    ]).unsqueeze(0))[0]
-                self.control.joint_act = wp.from_torch(joint_signals, requires_grad=True)
-                wp.sim.collide(self.model, self.state_0)
-                self.integrator.simulate(self.model, self.state_0, self.state_1, self.sim_dt, control=self.control)
-                reward = wp.zeros(1, dtype=wp.float32, requires_grad=True)
-                wp.launch(compute_reward, dim=self.num_envs, inputs=[self.state_1.body_q], outputs=[reward])
-                tape.backward(loss=reward)
-                print(tape.gradients[self.control.joint_act])
-                tape.zero()
-                
-                #print( self.state_0.body_q.gr)
+        joint_signals = self.controller(
+            torch.concatenate([
+                wp.to_torch(self.states[0].joint_q).detach(),
+                wp.to_torch(self.states[0].body_q).detach().flatten()
+            ]).unsqueeze(0))[0]
+        self.control.joint_act = wp.from_torch(joint_signals, requires_grad=True)
+        reward = wp.zeros((self.num_envs,), dtype=wp.float32, requires_grad=True)
 
-            #print(reward.numpy())
-                
+        tape = wp.Tape()
+        with tape:
+            for st in range(self.sim_substeps):
+                self.states[st].clear_forces()
+                wp.sim.collide(self.model, self.states[st])
+                self.integrator.simulate(self.model, self.states[st], self.states[st+1], self.sim_dt, control=self.control)
+            wp.launch(compute_reward, dim=self.num_envs, inputs=[self.states[self.sim_substeps].body_q], outputs=[reward])
 
-                
-            self.state_0, self.state_1 = self.state_1, self.state_0
+        tape.backward(loss=reward)
+        print(tape.gradients[self.control.joint_act])
+        tape.zero()
+        self.states[0], self.states[-1] = self.states[-1], self.states[0]
             
     def step(self, frame_num):
         with wp.ScopedTimer("step", print=False):
@@ -250,7 +199,7 @@ class Example:
 
         with wp.ScopedTimer("render", print=False):
             self.renderer.begin_frame(self.sim_time)
-            self.renderer.render(self.state_0)
+            self.renderer.render(self.states[0])
             self.renderer.end_frame()
 
 # Main
