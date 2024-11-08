@@ -82,27 +82,27 @@ class Example:
             xform=wp.transform([0.0, 0.55, 0.0], wp.quat_identity()),
             density=1000,
             armature=0.05,
-            stiffness=0.0,
-            damping=1,
+            stiffness=0.1,
+            damping=10,
             contact_ke=4.e+4,
-            contact_kd=1.e+4,
-            contact_kf=3.e+3,
+            contact_kd=250.0,
+            contact_kf=500.0,
             contact_mu=0.75,
             limit_ke=1.e+3,
             limit_kd=1.e+1,
         )
         builder = wp.sim.ModelBuilder()
         self.sim_time = 0.0
-        fps = 100
+        fps = 200
         # duration of each simulation frame in seconds
-        self.frame_dt = 1.0 / fps
+        self.frame_dt = 1/fps
 
         # number of substeps per frame
-        self.sim_substeps = 10
+        self.sim_substeps = 15
         # timestep for each substep
         self.sim_dt = self.frame_dt / self.sim_substeps
 
-        self.step_size = 0.2
+        self.step_size = 1
 
         self.num_envs = num_envs
         self.offsets = compute_env_offsets(self.num_envs)
@@ -110,10 +110,11 @@ class Example:
         self.target_origin = []
         for i in range(self.num_envs):
             builder.add_builder(articulation_builder, xform=wp.transform(self.offsets[i], wp.quat_identity()))
-
+            
             builder.joint_q[-8:] = [0.0, 1.0, 0.0, -1.0, 0.0, -1.0, 0.0, 1.0]
+            #builder.joint_axis_mode = [wp.sim.JOINT_MODE_TARGET_POSITION] * len(builder.joint_axis_mode)
             builder.joint_axis_mode = [wp.sim.JOINT_MODE_FORCE] * len(builder.joint_axis_mode)
-            builder.joint_act[-8:] = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0]
+            #builder.joint_act[-8:] = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
 
 
         np.set_printoptions(suppress=True)
@@ -127,7 +128,7 @@ class Example:
         self.model.joint_attach_kd = 200.0
 
 
-        self.integrator = wp.sim.XPBDIntegrator()
+        self.integrator = wp.sim.SemiImplicitIntegrator()
 
         if stage_path:
             self.renderer = wp.sim.render.SimRenderer(self.model, stage_path)
@@ -135,10 +136,13 @@ class Example:
             self.renderer = None
 
         self.states = [self.model.state(requires_grad=True) for _ in range(self.sim_substeps + 1)]
+        wp.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.states[0])
         self.control = self.model.control(requires_grad=True)
+        #self.control.joint_act = wp.array(np.random.uniform(-500, 500, size=8).astype(np.float32), requires_grad=True)
 
 
     def simulate(self, frame_num):
+        print(self.control.joint_act)
         joint_signals = torch.zeros_like(self.controller(
             torch.concatenate([
                 wp.to_torch(self.states[0].joint_q).detach(),
@@ -147,6 +151,7 @@ class Example:
         self.control.joint_act = wp.from_torch(joint_signals, requires_grad=True)
         reward = wp.zeros((self.num_envs,), dtype=wp.float32, requires_grad=True)
         #
+        
         tape = wp.Tape()
         with tape:
             for st in range(self.sim_substeps):
@@ -156,8 +161,21 @@ class Example:
             wp.launch(compute_reward, dim=self.num_envs, inputs=[self.states[self.sim_substeps].body_q], outputs=[reward])
 
         tape.backward(loss=reward)
+        grad = tape.gradients[self.control.joint_act].numpy().copy()
         tape.zero()
         self.states[0], self.states[-1] = self.states[-1], self.states[0]
+        #self.control.joint_act = wp.array(np.random.uniform(-500, 500, size=self.num_envs*8).astype(np.float32))
+        
+        self.control.joint_act = wp.array(
+            self.control.joint_act.numpy() + self.step_size * grad,
+            dtype=wp.float32,
+            requires_grad=True,
+            )
+        
+        
+        
+    
+        
 
     def step(self, frame_num):
         with wp.ScopedTimer("step", print=False):
