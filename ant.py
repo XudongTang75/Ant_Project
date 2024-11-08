@@ -23,7 +23,7 @@ class PolicyNetwork(nn.Module):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
         action = torch.tanh(self.fc3(x))  # Assuming normalized actions
-        return action + torch.randn_like(action)
+        return action + torch.randn_like(action) * 100
 
 # Return ants that align on X axis, and for y axis they are 5.0 apart.
 def compute_env_offsets(num_envs, env_offset=(0.0, 5.0, 0.0), up_axis="Z"):
@@ -138,16 +138,15 @@ class Example:
         self.states = [self.model.state(requires_grad=True) for _ in range(self.sim_substeps + 1)]
         wp.sim.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, None, self.states[0])
         self.control = self.model.control(requires_grad=True)
-        #self.control.joint_act = wp.array(np.random.uniform(-500, 500, size=8).astype(np.float32), requires_grad=True)
 
 
     def simulate(self, frame_num):
         print(self.control.joint_act)
-        joint_signals = torch.zeros_like(self.controller(
+        joint_signals = self.controller(
             torch.concatenate([
                 wp.to_torch(self.states[0].joint_q).detach(),
                 wp.to_torch(self.states[0].body_q).detach().flatten()
-            ]).unsqueeze(0))[0])
+            ]).unsqueeze(0))[0]
         self.control.joint_act = wp.from_torch(joint_signals, requires_grad=True)
         reward = wp.zeros((self.num_envs,), dtype=wp.float32, requires_grad=True)
         #
